@@ -59,6 +59,7 @@
   td.num { color: var(--muted); width: 24px; }
   td.name { font-family: var(--sans); font-weight: 500; }
   td.addr { color: var(--muted); font-size: 11.5px; max-width: 160px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  td.hits { font-family: var(--mono); font-size: 12px; color: var(--muted); text-align: right; padding-right: 20px; }
   .chip { display: inline-block; padding: 2px 8px; border-radius: 4px; font-size: 11px; font-family: var(--mono); font-weight: 600; }
   .chip.allow { background: rgba(79, 174, 110, 0.15); color: var(--allow); }
   .chip.deny { background: rgba(209, 87, 75, 0.15); color: var(--deny); }
@@ -91,11 +92,15 @@
   <div class="rules-col">
     <div class="rules-header">
       <h2>Live rulebase</h2>
-      <button id="refresh">Refresh</button>
+      <div style="display:flex;gap:8px">
+        <button id="refresh-appids" title="Refresh App-ID cache from firewall">Sync App-IDs</button>
+        <button id="refresh-hits" title="Refresh hit counts from firewall">Refresh Hits</button>
+        <button id="refresh">Refresh</button>
+      </div>
     </div>
     <div class="rules-table">
       <table id="rules-table">
-        <thead><tr><th></th><th>Name</th><th>Src Zone</th><th>Src Address</th><th>Dst Zone</th><th>Dst Address</th><th>Action</th></tr></thead>
+        <thead><tr><th></th><th>Name</th><th>Src Zone</th><th>Src Address</th><th>Dst Zone</th><th>Dst Address</th><th>Action</th><th>Hits</th></tr></thead>
         <tbody id="rules-body"></tbody>
       </table>
     </div>
@@ -121,15 +126,21 @@ function escapeHtml(s) {
 
 async function loadRules() {
   const body = document.getElementById('rules-body');
-  let rules;
+  let rules, hitData;
   try {
-    const res = await fetch('/api/rules', { cache: 'no-store' });
-    if (!res.ok) throw new Error(`Server returned ${res.status}`);
-    rules = await res.json();
+    const [rulesRes, hitsRes] = await Promise.all([
+      fetch('/api/rules', { cache: 'no-store' }),
+      fetch('/api/hit-counts', { cache: 'no-store' }),
+    ]);
+    if (!rulesRes.ok) throw new Error(`Server returned ${rulesRes.status}`);
+    rules = await rulesRes.json();
+    hitData = hitsRes.ok ? await hitsRes.json() : { supported: false, hit_counts: {} };
   } catch (e) {
-    body.innerHTML = `<tr><td colspan="5" class="empty">Failed to load rules: ${e.message}</td></tr>`;
+    body.innerHTML = `<tr><td colspan="8" class="empty">Failed to load rules: ${e.message}</td></tr>`;
     return;
   }
+  const hits = hitData.hit_counts || {};
+  const hitsSupported = hitData.supported;
   body.innerHTML = '';
   if (rules.length === 0) {
     body.innerHTML = '<tr><td colspan="5" class="empty">No rules yet.</td></tr>';
@@ -139,6 +150,20 @@ async function loadRules() {
     const tr = document.createElement('tr');
     const chipClass = r.action === 'allow' ? 'allow' : 'deny';
     const chipLabel = r.action === 'allow' ? 'Allow' : 'Deny';
+    const hitEntry = hits[r.name];
+    let hitsCell;
+    if (!hitsSupported) {
+      hitsCell = '<span title="Not supported on this PAN-OS platform/license">N/A</span>';
+    } else if (hitEntry !== undefined) {
+      const count = hitEntry.hit_count !== undefined ? hitEntry.hit_count : hitEntry;
+      const lastHit = hitEntry.last_hit_timestamp;
+      const lastHitStr = lastHit
+        ? new Date(lastHit * 1000).toLocaleString()
+        : 'never';
+      hitsCell = `<span title="Last hit: ${lastHitStr}">${Number(count).toLocaleString()}</span>`;
+    } else {
+      hitsCell = '<span title="No hits recorded">0</span>';
+    }
     tr.innerHTML = `
       <td class="num">${i + 1}</td>
       <td class="name">${escapeHtml(r.name)}</td>
@@ -147,6 +172,7 @@ async function loadRules() {
       <td>${escapeHtml(r.destination_zones.join(', '))}</td>
       <td class="addr">${escapeHtml((r.destination_addresses || []).join(', '))}</td>
       <td><span class="chip ${chipClass}">${chipLabel}</span></td>
+      <td class="hits">${hitsCell}</td>
     `;
     body.appendChild(tr);
   });
@@ -251,6 +277,34 @@ async function cancelJob(jobId, prevCard) {
 document.getElementById('send').addEventListener('click', sendInstruction);
 input.addEventListener('keydown', (e) => { if (e.key === 'Enter') sendInstruction(); });
 document.getElementById('refresh').addEventListener('click', loadRules);
+document.getElementById('refresh-hits').addEventListener('click', async () => {
+  const btn = document.getElementById('refresh-hits');
+  btn.disabled = true;
+  btn.textContent = 'Refreshing…';
+  try {
+    await fetch('/api/hit-counts/refresh', { method: 'POST' });
+    await loadRules();
+    btn.textContent = 'Refresh Hits';
+    btn.disabled = false;
+  } catch (e) {
+    btn.textContent = 'Failed';
+    setTimeout(() => { btn.textContent = 'Refresh Hits'; btn.disabled = false; }, 3000);
+  }
+});
+document.getElementById('refresh-appids').addEventListener('click', async () => {
+  const btn = document.getElementById('refresh-appids');
+  btn.disabled = true;
+  btn.textContent = 'Syncing…';
+  try {
+    const res = await fetch('/api/appids/refresh', { method: 'POST' });
+    const data = await res.json();
+    btn.textContent = `App-IDs (${data.appids_count})`;
+    setTimeout(() => { btn.textContent = 'Sync App-IDs'; btn.disabled = false; }, 3000);
+  } catch (e) {
+    btn.textContent = 'Sync failed';
+    setTimeout(() => { btn.textContent = 'Sync App-IDs'; btn.disabled = false; }, 3000);
+  }
+});
 
 loadRules();
 </script>

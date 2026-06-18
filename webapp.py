@@ -11,6 +11,7 @@ from pydantic import BaseModel, Field
 from langchain_anthropic import ChatAnthropic
 
 from render_policy import render_rules_to_string
+import panos_cache
 
 RULES_FILE = Path("rules.json")
 POLICIES_TF = Path("modules/panos-baseline/policies.tf")
@@ -114,6 +115,14 @@ def compute_candidate(rules, tool_name, args):
         if find_rule_index(rules, op.name) is not None:
             raise ValueError(f"Rule '{op.name}' already exists — use an update instead.")
         new_rule = op.model_dump(exclude={"insert_after"})
+        invalid_apps = panos_cache.validate_applications(new_rule.get("applications", []))
+        if invalid_apps:
+            raise ValueError(
+                f"Unknown App-ID name(s): {invalid_apps}. "
+                f"These are not in PAN-OS's predefined application list. "
+                f"Common examples: 'web-browsing' (not 'http'), 'ms-rdp' (not 'rdp'), "
+                f"'ssl', 'ssh', 'ping', 'icmp'. Check the App-ID list at /api/appids."
+            )
         if is_overly_broad(new_rule):
             warnings.append(f"'{op.name}' would allow ANY/ANY/ANY/ANY traffic — a wide-open rule.")
         if op.insert_after is None:
@@ -139,6 +148,13 @@ def compute_candidate(rules, tool_name, args):
             raise ValueError(f"No fields were specified to change on '{op.name}'.")
         before = dict(rules[idx])
         rules[idx].update(changes)
+        if "applications" in changes:
+            invalid_apps = panos_cache.validate_applications(changes["applications"])
+            if invalid_apps:
+                raise ValueError(
+                    f"Unknown App-ID name(s): {invalid_apps}. "
+                    f"Check valid names at /api/appids."
+                )
         if is_overly_broad(rules[idx]):
             warnings.append(f"'{op.name}' would allow ANY/ANY/ANY/ANY traffic after this change.")
         lines = [f"UPDATE '{op.name}':"]
@@ -291,6 +307,30 @@ def cancel_job(job_id: str):
 @app.get("/api/rules")
 def get_rules():
     return load_rules()
+
+
+@app.get("/api/appids")
+def list_appids():
+    return {"appids": panos_cache.get_appids(), "count": len(panos_cache.get_appids())}
+
+
+@app.post("/api/appids/refresh")
+def refresh_appids():
+    data = panos_cache.refresh_cache(force=True)
+    return {
+        "appids_count": len(data.get("appids", [])),
+        "hit_counts_supported": data.get("hit_counts_supported", False),
+        "fetched_at": data.get("fetched_at"),
+    }
+
+
+@app.get("/api/hit-counts")
+def hit_counts():
+    counts = panos_cache.get_hit_counts()
+    return {
+        "supported": bool(counts),
+        "hit_counts": counts,
+    }
 
 
 @app.get("/", response_class=HTMLResponse)
