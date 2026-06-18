@@ -463,6 +463,8 @@ def compute_nat_candidate(rules, tool_name, args):
             f"  dst:  zone={new_rule['destination_zone']}  addrs={new_rule['destination_addresses']}\n"
             f"  snat: {new_rule['sat_type']}"
             + (f" via {new_rule['sat_interface']}" if new_rule.get('sat_interface') else "")
+            + (f" -> {new_rule['sat_static_translated_address']}" if new_rule.get('sat_static_translated_address') else "")
+            + (f" pool={new_rule['sat_translated_addresses']}" if new_rule.get('sat_translated_addresses') else "")
             + (f"\n  dnat: {new_rule['dat_address']}" + (f":{new_rule['dat_port']}" if new_rule.get('dat_port') else "") if new_rule.get('dat_address') else "")
         )
 
