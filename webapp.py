@@ -336,3 +336,87 @@ def hit_counts():
 @app.get("/", response_class=HTMLResponse)
 def index():
     return Path("static/index.html").read_text()
+
+
+@app.get("/api/nat-rules")
+def get_nat_rules():
+    """Read NAT rules directly from the live firewall — read-only, not Terraform-managed."""
+    try:
+        import panos_cache
+        hostname = __import__('os').environ.get("PANOS_HOSTNAME")
+        username = __import__('os').environ.get("PANOS_USERNAME")
+        password = __import__('os').environ.get("PANOS_PASSWORD")
+        import requests, urllib3, xml.etree.ElementTree as ET
+        urllib3.disable_warnings()
+
+        # Get API key
+        r = requests.get(
+            f"https://{hostname}/api/",
+            params={"type": "keygen", "user": username, "password": password},
+            verify=False, timeout=15
+        )
+        key = ET.fromstring(r.text).findtext(".//key")
+
+        # Fetch NAT rules
+        r = requests.get(
+            f"https://{hostname}/api/",
+            params={
+                "type": "config",
+                "action": "get",
+                "xpath": "/config/devices/entry/vsys/entry/rulebase/nat/rules",
+                "key": key,
+            },
+            verify=False, timeout=15
+        )
+        root = ET.fromstring(r.text)
+        rules = []
+        for entry in root.findall(".//rules/entry"):
+            name = entry.get("name")
+            src_zones = [m.text for m in entry.findall(".//from/member")]
+            dst_zones = [m.text for m in entry.findall(".//to/member")]
+            src_addrs = [m.text for m in entry.findall(".//source/member")]
+            dst_addrs = [m.text for m in entry.findall(".//destination/member")]
+
+            # Source translation type
+            snat = entry.find(".//source-translation")
+            if snat is not None:
+                if snat.find(".//dynamic-ip-and-port") is not None:
+                    dip = snat.find(".//dynamic-ip-and-port")
+                    if dip.find(".//interface-address") is not None:
+                        iface = dip.findtext(".//interface") or "unknown"
+                        snat_type = f"dynamic-ip-and-port ({iface})"
+                    else:
+                        translated = [m.text for m in dip.findall(".//member")]
+                        snat_type = f"dynamic-ip-and-port ({', '.join(translated)})"
+                elif snat.find(".//static-ip") is not None:
+                    ip = snat.findtext(".//translated-address") or "unknown"
+                    snat_type = f"static-ip ({ip})"
+                elif snat.find(".//dynamic-ip") is not None:
+                    snat_type = "dynamic-ip"
+                else:
+                    snat_type = "unknown"
+            else:
+                snat_type = "none"
+
+            # Destination translation
+            dnat = entry.find(".//destination-translation")
+            if dnat is not None:
+                dnat_addr = dnat.findtext(".//translated-address") or "unknown"
+                dnat_port = dnat.findtext(".//translated-port")
+                dnat_type = f"{dnat_addr}" + (f":{dnat_port}" if dnat_port else "")
+            else:
+                dnat_type = "none"
+
+            rules.append({
+                "name": name,
+                "source_zones": src_zones,
+                "destination_zones": dst_zones,
+                "source_addresses": src_addrs,
+                "destination_addresses": dst_addrs,
+                "source_translation": snat_type,
+                "destination_translation": dnat_type,
+            })
+
+        return {"rules": rules, "count": len(rules)}
+    except Exception as e:
+        return {"error": str(e), "rules": [], "count": 0}
