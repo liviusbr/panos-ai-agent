@@ -1,4 +1,6 @@
 panos-ai-agent
+
+
 A natural language interface for managing Palo Alto Networks (PAN-OS) security policy through Terraform. Describe a rule change in plain English, review the actual `terraform plan` diff, and apply it only after confirming both the AI's interpretation and the real infrastructure change — available as a CLI tool or a web dashboard.
 What this does
 Most "AI agent" demos let a model generate config and apply it directly. This one is built around a different assumption: an LLM should never be the thing deciding what changes on a firewall, only the thing translating intent into a structured, reviewable proposal. Every change goes through the same pipeline regardless of entry point:
