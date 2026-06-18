@@ -68,3 +68,17 @@ resource "panos_address_object" "web_server" {
 
 # panos_security_policy.policies now lives in policies.tf,
 # generated from rules.json by render_policy.py. Don't add it back here.
+
+
+resource "panos_nat_policy" "nat_untrust_trust" {
+  name                  = "nat_untrust_trust"
+  source_zones          = ["untrust"]
+  destination_zone      = "trust"
+  source_addresses      = ["any"]
+  destination_addresses = ["192.168.63.64/32"]
+  service               = "any"
+  disabled              = true
+  sat_type              = "dynamic-ip-and-port"
+  sat_address_type      = "interface-address"
+  sat_interface         = "ethernet1/2"
+}

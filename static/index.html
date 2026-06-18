@@ -131,12 +131,25 @@
       </div>
     </div>
 
-    <div class="tab-content" id="tab-nat">
-      <div class="rules-table">
-        <table id="nat-table">
-          <thead><tr><th></th><th>Name</th><th>Src Zone</th><th>Src Address</th><th>Dst Zone</th><th>Dst Address</th><th>Source NAT</th><th>Dest NAT</th></tr></thead>
-          <tbody id="nat-body"><tr><td colspan="8" class="empty">Click Refresh to load NAT rules.</td></tr></tbody>
-        </table>
+    <div class="tab-content" id="tab-nat" style="flex-direction:row;">
+      <!-- NAT chat panel -->
+      <div style="flex:1;display:flex;flex-direction:column;border-right:1px solid var(--border);min-width:0;">
+        <div class="messages" id="nat-messages" style="flex:1;overflow-y:auto;padding:16px;display:flex;flex-direction:column;gap:12px;">
+          <div class="msg system">Describe a NAT rule change — create, update, or delete. Same pipeline as security rules: interpret → plan → apply.</div>
+        </div>
+        <div class="composer">
+          <input id="nat-instruction" type="text" placeholder="e.g. add DNAT rule to forward port 443 to 192.168.1.100" autocomplete="off">
+          <button class="primary" id="nat-send">Send</button>
+        </div>
+      </div>
+      <!-- NAT rules table -->
+      <div style="flex:1;display:flex;flex-direction:column;min-width:280px;">
+        <div class="rules-table">
+          <table id="nat-table">
+            <thead><tr><th></th><th>Name</th><th>Src Zone</th><th>Dst Zone</th><th>Dst Address</th><th>Source NAT</th><th>Dest NAT</th></tr></thead>
+            <tbody id="nat-body"><tr><td colspan="7" class="empty">Click NAT tab to load.</td></tr></tbody>
+          </table>
+        </div>
       </div>
     </div>
   </div>
@@ -321,35 +334,152 @@ function switchTab(name) {
   if (name === 'nat') loadNatRules();
 }
 
+// ── NAT pipeline ──────────────────────────────────────────────────────────────
+function addNatMessage(html, cls) {
+  const div = document.createElement('div');
+  div.className = cls;
+  div.innerHTML = html;
+  const msgs = document.getElementById('nat-messages');
+  msgs.appendChild(div);
+  msgs.scrollTop = msgs.scrollHeight;
+  return div;
+}
+
+async function sendNatInstruction() {
+  const text = document.getElementById('nat-instruction').value.trim();
+  if (!text) return;
+  document.getElementById('nat-instruction').value = '';
+  addNatMessage(escapeHtml(text), 'msg user');
+
+  const thinking = addNatMessage('thinking…', 'msg system');
+  let data;
+  try {
+    const res = await fetch('/api/nat/interpret', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ instruction: text })
+    });
+    data = await res.json();
+  } catch (e) {
+    thinking.remove();
+    addNatMessage(`<div class="label">Request failed</div><div class="summary">${escapeHtml(e.message)}</div>`, 'card error');
+    return;
+  }
+  thinking.remove();
+
+  if (data.error) {
+    addNatMessage(`<div class="label">${escapeHtml(data.error)}</div><div class="summary">${escapeHtml(data.message)}</div>`, 'card error');
+    return;
+  }
+
+  const card = addNatMessage(`
+    <div class="label">Interpreted as ${escapeHtml(data.tool_name)}</div>
+    <div class="summary">${escapeHtml(data.summary)}</div>
+    <div class="actions">
+      <button class="primary nat-confirm-btn">Continue</button>
+      <button class="nat-cancel-btn">Cancel</button>
+    </div>
+  `, 'card');
+  card.querySelector('.nat-confirm-btn').addEventListener('click', () => runNatPlan(data.job_id, card));
+  card.querySelector('.nat-cancel-btn').addEventListener('click', () => cancelNatJob(data.job_id, card));
+}
+
+async function runNatPlan(jobId, prevCard) {
+  prevCard.querySelectorAll('button').forEach(b => b.disabled = true);
+  const thinking = addNatMessage('running terraform plan…', 'msg system');
+  const res = await fetch(`/api/nat/jobs/${jobId}/plan`, { method: 'POST' });
+  const data = await res.json();
+  thinking.remove();
+
+  if (data.status === 'plan_failed') {
+    addNatMessage(`<div class="label" style="color:var(--deny)">Plan failed</div><div class="plan-output">${escapeHtml(data.output)}</div>`, 'card error');
+    return;
+  }
+
+  const planCard = addNatMessage(`
+    <div class="label">Terraform plan</div>
+    <div class="plan-output">${escapeHtml(data.output)}</div>
+    <div class="actions">
+      <button class="primary nat-apply-btn" ${data.no_changes ? 'disabled' : ''}>Apply</button>
+      <button class="nat-cancel-btn">Cancel</button>
+    </div>
+  `, 'card');
+  planCard.querySelector('.nat-apply-btn').addEventListener('click', () => runNatApply(jobId, planCard));
+  planCard.querySelector('.nat-cancel-btn').addEventListener('click', () => cancelNatJob(jobId, planCard));
+}
+
+async function runNatApply(jobId, prevCard) {
+  prevCard.querySelectorAll('button').forEach(b => b.disabled = true);
+  const thinking = addNatMessage('applying — waiting for PAN-OS commit…', 'msg system');
+  const res = await fetch(`/api/nat/jobs/${jobId}/apply`, { method: 'POST' });
+  const data = await res.json();
+  thinking.remove();
+
+  if (data.status === 'applied') {
+    addNatMessage(`<div class="label" style="color:var(--allow)">Applied</div><div class="plan-output">${escapeHtml(data.output)}</div>`, 'card');
+    loadNatRules();
+  } else {
+    addNatMessage(`<div class="label" style="color:var(--deny)">Apply failed</div><div class="summary">${escapeHtml(data.warning || '')}</div><div class="plan-output">${escapeHtml(data.output)}</div>`, 'card error');
+  }
+}
+
+async function cancelNatJob(jobId, prevCard) {
+  await fetch(`/api/nat/jobs/${jobId}/cancel`, { method: 'POST' });
+  prevCard.querySelectorAll('button').forEach(b => b.disabled = true);
+  addNatMessage('Cancelled — nothing applied.', 'msg system');
+}
+
 async function loadNatRules() {
   const body = document.getElementById('nat-body');
-  body.innerHTML = '<tr><td colspan="8" class="empty">Loading…</td></tr>';
+  body.innerHTML = '<tr><td colspan="7" class="empty">Loading…</td></tr>';
   try {
-    const res = await fetch('/api/nat-rules', { cache: 'no-store' });
-    if (!res.ok) throw new Error(`Server returned ${res.status}`);
-    const data = await res.json();
-    if (data.error) throw new Error(data.error);
+    // Merge live firewall rules (read-only) with agent-managed rules
+    const [liveRes, agentRes] = await Promise.all([
+      fetch('/api/nat-rules', { cache: 'no-store' }),
+      fetch('/api/nat/rules', { cache: 'no-store' }),
+    ]);
+    const liveData = liveRes.ok ? await liveRes.json() : { rules: [] };
+    const agentRules = agentRes.ok ? await agentRes.json() : [];
+
+    // Mark source of each rule
+    const liveRules = (liveData.rules || []).map(r => ({ ...r, _source: 'live' }));
+    const agentMarked = agentRules.map(r => ({ ...r, _source: 'agent' }));
+
+    // Deduplicate: agent rules take precedence over live rules with same name
+    const agentNames = new Set(agentMarked.map(r => r.name));
+    const merged = [
+      ...liveRules.filter(r => !agentNames.has(r.name)),
+      ...agentMarked,
+    ].sort((a, b) => a.name.localeCompare(b.name));
+
     body.innerHTML = '';
-    if (data.rules.length === 0) {
-      body.innerHTML = '<tr><td colspan="8" class="empty">No NAT rules found.</td></tr>';
+    if (merged.length === 0) {
+      body.innerHTML = '<tr><td colspan="7" class="empty">No NAT rules found.</td></tr>';
       return;
     }
-    data.rules.forEach((r, i) => {
+    merged.forEach((r, i) => {
       const tr = document.createElement('tr');
+      const badge = r._source === 'agent'
+        ? '<span style="font-size:9px;background:rgba(91,157,217,0.2);color:var(--accent);border-radius:3px;padding:1px 5px;margin-left:4px;">agent</span>'
+        : '';
+      const srcZones = (r.source_zones || r.source_zone ? [r.source_zone] : []).join(', ') || (r.source_zones||[]).join(', ');
+      const dstZone = r.destination_zone || (r.destination_zones||[]).join(', ');
+      const dstAddr = (r.destination_addresses||[]).join(', ');
+      const snat = r.source_translation || (r.sat_type ? r.sat_type + (r.sat_interface ? ` (${r.sat_interface})` : '') : 'none');
+      const dnat = r.destination_translation || (r.dat_address ? r.dat_address + (r.dat_port ? `:${r.dat_port}` : '') : 'none');
       tr.innerHTML = `
         <td class="num">${i + 1}</td>
-        <td class="name">${escapeHtml(r.name)}</td>
-        <td>${escapeHtml((r.source_zones || []).join(', '))}</td>
-        <td class="addr">${escapeHtml((r.source_addresses || []).join(', '))}</td>
-        <td>${escapeHtml((r.destination_zones || []).join(', '))}</td>
-        <td class="addr">${escapeHtml((r.destination_addresses || []).join(', '))}</td>
-        <td class="addr">${escapeHtml(r.source_translation || 'none')}</td>
-        <td class="addr">${escapeHtml(r.destination_translation || 'none')}</td>
+        <td class="name">${escapeHtml(r.name)}${badge}</td>
+        <td>${escapeHtml((r.source_zones||[]).join(', '))}</td>
+        <td>${escapeHtml(dstZone)}</td>
+        <td class="addr">${escapeHtml(dstAddr)}</td>
+        <td class="addr">${escapeHtml(snat)}</td>
+        <td class="addr">${escapeHtml(dnat)}</td>
       `;
       body.appendChild(tr);
     });
   } catch (e) {
-    body.innerHTML = `<tr><td colspan="8" class="empty">Failed to load NAT rules: ${escapeHtml(e.message)}</td></tr>`;
+    body.innerHTML = `<tr><td colspan="7" class="empty">Failed: ${escapeHtml(e.message)}</td></tr>`;
   }
 }
 
@@ -392,6 +522,8 @@ async function loadNatRules() {
   });
 })();
 
+document.getElementById('nat-send').addEventListener('click', sendNatInstruction);
+document.getElementById('nat-instruction').addEventListener('keydown', (e) => { if (e.key === 'Enter') sendNatInstruction(); });
 document.getElementById('send').addEventListener('click', sendInstruction);
 input.addEventListener('keydown', (e) => { if (e.key === 'Enter') sendInstruction(); });
 document.getElementById('refresh').addEventListener('click', () => {

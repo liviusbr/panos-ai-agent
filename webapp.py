@@ -420,3 +420,192 @@ def get_nat_rules():
         return {"rules": rules, "count": len(rules)}
     except Exception as e:
         return {"error": str(e), "rules": [], "count": 0}
+
+
+# ── NAT Agent endpoints ────────────────────────────────────────────────────────
+
+from nat_agent_tools import CreateNatRule, UpdateNatRule, DeleteNatRule, NAT_TOOLS
+from render_nat_policy import render_nat_rules_to_string
+
+NAT_RULES_FILE = Path("nat_rules.json")
+NAT_POLICIES_TF = Path("modules/panos-baseline/nat_policy.tf")
+
+
+def load_nat_rules():
+    if not NAT_RULES_FILE.exists():
+        return []
+    return json.loads(NAT_RULES_FILE.read_text())
+
+
+def restore_nat_policies_tf_from_disk():
+    NAT_POLICIES_TF.write_text(render_nat_rules_to_string(load_nat_rules()))
+
+
+def find_nat_rule_index(rules, name):
+    for i, r in enumerate(rules):
+        if r["name"] == name:
+            return i
+    return None
+
+
+def compute_nat_candidate(rules, tool_name, args):
+    rules = json.loads(json.dumps(rules))
+
+    if tool_name == "CreateNatRule":
+        op = CreateNatRule(**args)
+        if find_nat_rule_index(rules, op.name) is not None:
+            raise ValueError(f"NAT rule '{op.name}' already exists.")
+        new_rule = op.model_dump()
+        rules.append(new_rule)
+        summary = (f"CREATE NAT '{op.name}': {op.sat_type} "
+                   f"{op.source_zones} -> {op.destination_zone}, "
+                   f"dst={op.destination_addresses}"
+                   + (f" -> {op.dat_address}" if op.dat_address else ""))
+
+    elif tool_name == "UpdateNatRule":
+        op = UpdateNatRule(**args)
+        idx = find_nat_rule_index(rules, op.name)
+        if idx is None:
+            raise ValueError(f"No NAT rule named '{op.name}' exists.")
+        changes = op.model_dump(exclude={"name"}, exclude_none=True)
+        if not changes:
+            raise ValueError(f"No fields specified to change on '{op.name}'.")
+        before = dict(rules[idx])
+        rules[idx].update(changes)
+        lines = [f"UPDATE NAT '{op.name}':"]
+        for field, new_value in changes.items():
+            lines.append(f"  {field}: {before.get(field)!r} -> {new_value!r}")
+        summary = "\n".join(lines)
+
+    elif tool_name == "DeleteNatRule":
+        op = DeleteNatRule(**args)
+        idx = find_nat_rule_index(rules, op.name)
+        if idx is None:
+            raise ValueError(f"No NAT rule named '{op.name}' exists.")
+        summary = f"DELETE NAT '{op.name}': {rules[idx]}"
+        del rules[idx]
+
+    else:
+        raise ValueError(f"Unknown NAT tool: {tool_name}")
+
+    return rules, summary
+
+
+class NatInterpretRequest(BaseModel):
+    instruction: str
+
+
+@app.post("/api/nat/interpret")
+def nat_interpret(req: NatInterpretRequest):
+    try:
+        llm = ChatAnthropic(model="claude-haiku-4-5-20251001", temperature=0, max_tokens=1024)
+        llm_with_tools = llm.bind_tools(NAT_TOOLS)
+        response = llm_with_tools.invoke(
+            "You manage Palo Alto firewall NAT policy. Translate the user's request into "
+            "exactly one tool call — create, update, or delete a NAT rule. "
+            "sat_type 'dynamic-ip-and-port' is PAT/masquerade (most common for outbound). "
+            "dat_address/dat_port are for destination NAT (port forwarding, DNAT). "
+            "Never invent interface or address names the user didn't mention. "
+            f"User request: {req.instruction}"
+        )
+    except Exception as e:
+        print(f"\n=== nat_interpret FAILED: {e} ===\n", flush=True)
+        return {"error": "llm_call_failed", "message": str(e)}
+
+    tool_calls = response.tool_calls
+    if not tool_calls:
+        return {"error": "no_tool_call", "message": response.content or "No tool call returned."}
+    if len(tool_calls) > 1:
+        return {"error": "ambiguous", "message": f"Got {len(tool_calls)} tool calls — refusing to guess."}
+
+    call = tool_calls[0]
+    print(f"\n=== nat_interpret: '{req.instruction}' -> {call['name']}({call['args']}) ===\n", flush=True)
+
+    try:
+        rules = load_nat_rules()
+        candidate_rules, summary = compute_nat_candidate(rules, call["name"], call["args"])
+    except Exception as e:
+        return {"error": "validation_failed", "message": str(e)}
+
+    job_id = str(uuid.uuid4())
+    with JOBS_LOCK:
+        JOBS[job_id] = {
+            "status": "interpreted",
+            "type": "nat",
+            "tool_name": call["name"],
+            "tool_args": call["args"],
+            "candidate_rules": candidate_rules,
+        }
+
+    return {
+        "job_id": job_id,
+        "tool_name": call["name"],
+        "tool_args": call["args"],
+        "summary": summary,
+    }
+
+
+@app.post("/api/nat/jobs/{job_id}/plan")
+def nat_plan_job(job_id: str):
+    with JOBS_LOCK:
+        job = JOBS.get(job_id)
+    if not job or job.get("type") != "nat":
+        raise HTTPException(404, "Unknown NAT job")
+
+    planfile = f"tfplan-{job_id}"
+    with TERRAFORM_LOCK:
+        NAT_POLICIES_TF.write_text(render_nat_rules_to_string(job["candidate_rules"]))
+        code, output = run(["terraform", "plan", "-no-color", f"-out={planfile}", "-detailed-exitcode"])
+        restore_nat_policies_tf_from_disk()
+
+    print(f"\n=== nat_plan {job_id} (exit {code}) ===\n{output}\n=== end ===\n", flush=True)
+
+    if code == 1:
+        job["status"] = "plan_failed"
+        return {"status": "plan_failed", "output": output}
+
+    job["status"] = "planned"
+    job["planfile"] = planfile
+    return {"status": "planned", "output": output, "no_changes": code == 0}
+
+
+@app.post("/api/nat/jobs/{job_id}/apply")
+def nat_apply_job(job_id: str):
+    with JOBS_LOCK:
+        job = JOBS.get(job_id)
+    if not job or job.get("status") != "planned" or job.get("type") != "nat":
+        raise HTTPException(400, "Job must be a successfully planned NAT job")
+
+    with TERRAFORM_LOCK:
+        code, output = run(["terraform", "apply", "-no-color", job["planfile"]])
+        Path(job["planfile"]).unlink(missing_ok=True)
+
+        print(f"\n=== nat_apply {job_id} (exit {code}) ===\n{output}\n=== end ===\n", flush=True)
+
+        if code != 0:
+            job["status"] = "apply_failed"
+            return {
+                "status": "apply_failed",
+                "output": output,
+                "warning": "Apply failed — check terraform state and firewall GUI directly.",
+            }
+
+        NAT_RULES_FILE.write_text(json.dumps(job["candidate_rules"], indent=2))
+        restore_nat_policies_tf_from_disk()
+        job["status"] = "applied"
+
+    return {"status": "applied", "output": output}
+
+
+@app.post("/api/nat/jobs/{job_id}/cancel")
+def nat_cancel_job(job_id: str):
+    with JOBS_LOCK:
+        job = JOBS.pop(job_id, None)
+    if job and job.get("planfile"):
+        Path(job["planfile"]).unlink(missing_ok=True)
+    return {"status": "cancelled"}
+
+
+@app.get("/api/nat/rules")
+def get_nat_agent_rules():
+    return load_nat_rules()
