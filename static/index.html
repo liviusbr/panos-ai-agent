@@ -58,6 +58,7 @@
   td { padding: 9px 16px; border-bottom: 1px solid var(--border); font-family: var(--mono); }
   td.num { color: var(--muted); width: 24px; }
   td.name { font-family: var(--sans); font-weight: 500; }
+  td.addr { color: var(--muted); font-size: 11.5px; max-width: 160px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
   .chip { display: inline-block; padding: 2px 8px; border-radius: 4px; font-size: 11px; font-family: var(--mono); font-weight: 600; }
   .chip.allow { background: rgba(79, 174, 110, 0.15); color: var(--allow); }
   .chip.deny { background: rgba(209, 87, 75, 0.15); color: var(--deny); }
@@ -94,7 +95,7 @@
     </div>
     <div class="rules-table">
       <table id="rules-table">
-        <thead><tr><th></th><th>Name</th><th>Source</th><th>Destination</th><th>Action</th></tr></thead>
+        <thead><tr><th></th><th>Name</th><th>Src Zone</th><th>Src Address</th><th>Dst Zone</th><th>Dst Address</th><th>Action</th></tr></thead>
         <tbody id="rules-body"></tbody>
       </table>
     </div>
@@ -141,8 +142,10 @@ async function loadRules() {
     tr.innerHTML = `
       <td class="num">${i + 1}</td>
       <td class="name">${escapeHtml(r.name)}</td>
-      <td>${escapeHtml(r.source_zones.join(','))}</td>
-      <td>${escapeHtml(r.destination_zones.join(','))}</td>
+      <td>${escapeHtml(r.source_zones.join(', '))}</td>
+      <td class="addr">${escapeHtml((r.source_addresses || []).join(', '))}</td>
+      <td>${escapeHtml(r.destination_zones.join(', '))}</td>
+      <td class="addr">${escapeHtml((r.destination_addresses || []).join(', '))}</td>
       <td><span class="chip ${chipClass}">${chipLabel}</span></td>
     `;
     body.appendChild(tr);
