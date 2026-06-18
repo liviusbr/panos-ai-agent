@@ -64,6 +64,14 @@
   .chip.allow { background: rgba(79, 174, 110, 0.15); color: var(--allow); }
   .chip.deny { background: rgba(209, 87, 75, 0.15); color: var(--deny); }
   .empty { padding: 40px 20px; text-align: center; color: var(--muted); font-size: 13px; }
+  .resizer {
+    width: 5px;
+    cursor: col-resize;
+    background: var(--border);
+    flex-shrink: 0;
+    transition: background 0.15s;
+  }
+  .resizer:hover, .resizer.dragging { background: var(--accent); }
   @media (prefers-reduced-motion: reduce) { .msg { animation: none; } }
   @media (max-width: 800px) {
     main { flex-direction: column; }
@@ -79,7 +87,7 @@
 </header>
 
 <main>
-  <div class="chat-col">
+  <div class="chat-col" id="chat-col">
     <div class="messages" id="messages">
       <div class="msg system">Describe a rule change below — create, update, or delete. Nothing touches the firewall until you've reviewed and confirmed both the interpretation and the plan.</div>
     </div>
@@ -89,7 +97,8 @@
     </div>
   </div>
 
-  <div class="rules-col">
+  <div class="resizer" id="resizer"></div>
+  <div class="rules-col" id="rules-col">
     <div class="rules-header">
       <h2>Live rulebase</h2>
       <div style="display:flex;gap:8px">
@@ -128,9 +137,12 @@ async function loadRules() {
   const body = document.getElementById('rules-body');
   let rules, hitData;
   try {
+    const hitsUrl = window.panos_cache_bust ? '/api/hit-counts/refresh' : '/api/hit-counts';
+    const hitsMethod = window.panos_cache_bust ? 'POST' : 'GET';
+    window.panos_cache_bust = false;
     const [rulesRes, hitsRes] = await Promise.all([
       fetch('/api/rules', { cache: 'no-store' }),
-      fetch('/api/hit-counts', { cache: 'no-store' }),
+      fetch(hitsUrl, { method: hitsMethod, cache: 'no-store' }),
     ]);
     if (!rulesRes.ok) throw new Error(`Server returned ${rulesRes.status}`);
     rules = await rulesRes.json();
@@ -274,9 +286,51 @@ async function cancelJob(jobId, prevCard) {
   addMessage('Cancelled — nothing applied.', 'msg system');
 }
 
+// Resizable divider
+(function() {
+  const resizer = document.getElementById('resizer');
+  const chatCol = document.getElementById('chat-col');
+  const rulesCol = document.getElementById('rules-col');
+  const main = resizer.parentElement;
+  let startX, startChatW, startRulesW;
+
+  resizer.addEventListener('mousedown', (e) => {
+    startX = e.clientX;
+    startChatW = chatCol.getBoundingClientRect().width;
+    startRulesW = rulesCol.getBoundingClientRect().width;
+    resizer.classList.add('dragging');
+    document.body.style.cursor = 'col-resize';
+    document.body.style.userSelect = 'none';
+
+    function onMove(e) {
+      const dx = e.clientX - startX;
+      const newChat = Math.max(280, startChatW + dx);
+      const newRules = Math.max(320, startRulesW - dx);
+      chatCol.style.flex = 'none';
+      chatCol.style.width = newChat + 'px';
+      rulesCol.style.flex = 'none';
+      rulesCol.style.width = newRules + 'px';
+    }
+
+    function onUp() {
+      resizer.classList.remove('dragging');
+      document.body.style.cursor = '';
+      document.body.style.userSelect = '';
+      document.removeEventListener('mousemove', onMove);
+      document.removeEventListener('mouseup', onUp);
+    }
+
+    document.addEventListener('mousemove', onMove);
+    document.addEventListener('mouseup', onUp);
+  });
+})();
+
 document.getElementById('send').addEventListener('click', sendInstruction);
 input.addEventListener('keydown', (e) => { if (e.key === 'Enter') sendInstruction(); });
-document.getElementById('refresh').addEventListener('click', loadRules);
+document.getElementById('refresh').addEventListener('click', () => {
+  window.panos_cache_bust = true;
+  loadRules();
+});
 document.getElementById('refresh-hits').addEventListener('click', async () => {
   const btn = document.getElementById('refresh-hits');
   btn.disabled = true;

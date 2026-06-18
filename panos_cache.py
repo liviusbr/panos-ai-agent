@@ -13,7 +13,8 @@ from pathlib import Path
 urllib3.disable_warnings()
 
 CACHE_FILE = Path(".panos_cache.json")
-CACHE_TTL_SECONDS = 86400  # 24 hours
+CACHE_TTL_SECONDS = 86400       # 24 hours — for App-ID list (rarely changes)
+HIT_COUNT_TTL_SECONDS = 30      # 30 seconds — operational counters, refresh frequently
 
 
 def _require_env(name):
@@ -132,8 +133,25 @@ def get_appids():
     return refresh_cache().get("appids", [])
 
 
-def get_hit_counts():
-    return refresh_cache().get("hit_counts", {})
+def get_hit_counts(force=False):
+    """Always fetches fresh hit counts unless the data is less than 30 seconds old."""
+    cached = load_cache()
+    if not force and cached:
+        age = time.time() - cached.get("hits_fetched_at", 0)
+        if age < HIT_COUNT_TTL_SECONDS:
+            return cached.get("hit_counts", {})
+    try:
+        hostname, key = _get_api_key()
+        hits = _fetch_hit_counts(hostname, key)
+        if cached:
+            cached["hit_counts"] = hits
+            cached["hit_counts_supported"] = bool(hits)
+            cached["hits_fetched_at"] = time.time()
+            CACHE_FILE.write_text(json.dumps(cached, indent=2))
+        return hits
+    except Exception as e:
+        print(f"Hit count refresh failed: {e}", flush=True)
+        return cached.get("hit_counts", {}) if cached else {}
 
 
 def validate_applications(apps: list[str]) -> list[str]:
