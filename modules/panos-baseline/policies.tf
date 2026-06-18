@@ -44,13 +44,27 @@ resource "panos_security_policy" "policies" {
   }
 
   rule {
-    name                  = "allow-ssh-10.10.10.10-to-10.50.50.50"
+    name                  = "allow icmp untrust to trust"
     source_zones          = ["untrust"]
-    source_addresses      = ["10.10.10.10"]
+    source_addresses      = ["10.10.10.10/32"]
     source_users          = ["any"]
     destination_zones     = ["trust"]
-    destination_addresses = ["10.50.50.50"]
-    applications          = ["ssh"]
+    destination_addresses = ["10.50.50.50/32"]
+    applications          = ["ping"]
+    services              = ["application-default"]
+    categories            = ["any"]
+    action                = "allow"
+    log_end               = true
+  }
+
+  rule {
+    name                  = "outbound-http"
+    source_zones          = ["trust"]
+    source_addresses      = ["10.10.10.10/32"]
+    source_users          = ["any"]
+    destination_zones     = ["untrust"]
+    destination_addresses = ["20.20.20.20/32"]
+    applications          = ["web-browsing"]
     services              = ["application-default"]
     categories            = ["any"]
     action                = "allow"

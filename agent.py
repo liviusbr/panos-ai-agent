@@ -10,14 +10,23 @@ RULES_FILE = "rules.json"
 
 class CreateRule(BaseModel):
     """Create a brand new security rule on the firewall."""
-    name: str = Field(description="Unique name for the new rule")
+    name: str = Field(description="Unique name for the new rule, using hyphens between words (e.g. 'allow-ssh-from-internet'), matching the style of existing rules — never spaces.")
     source_zones: List[str] = Field(description="Source security zones, e.g. ['trust']")
     source_addresses: List[str] = Field(default=["any"])
     source_users: List[str] = Field(default=["any"])
     destination_zones: List[str] = Field(description="Destination security zones")
     destination_addresses: List[str] = Field(default=["any"])
-    applications: List[str] = Field(default=["any"])
-    services: List[str] = Field(default=["application-default"])
+    applications: List[str] = Field(
+        default=["any"],
+        description="App-ID application names PAN-OS recognizes, e.g. 'ms-rdp', 'ssl', "
+                    "'web-browsing', 'icmp', 'ping', or 'any'. This is Layer 7 — what kind of traffic it is."
+    )
+    services: List[str] = Field(
+        default=["application-default"],
+        description="Layer 4 service reference ONLY. Must be 'any', 'application-default', or the "
+                    "exact name of an existing PAN-OS Service object. NEVER put an application name "
+                    "here — when in doubt, leave this as 'application-default'."
+    )
     categories: List[str] = Field(default=["any"])
     action: Literal["allow", "deny"]
     log_end: bool = Field(default=True)
@@ -92,7 +101,7 @@ def apply_create(rules, op: CreateRule):
     else:
         idx = find_rule_index(rules, op.insert_after)
         if idx is None:
-            print(f"Can't insert after '{op.insert_after}' — no such rule exists. No changes made.")
+            print(f"Can't insert after '{op.insert_after}' — no rule with that name exists. No changes made.")
             sys.exit(1)
         rules.insert(idx + 1, new_rule)
         position = f"directly after '{op.insert_after}'"
@@ -189,10 +198,24 @@ def main():
         sys.exit(0)
 
     rules = load_rules()
-    rules = handler(rules, op)
-    save_rules(rules)
-    print(f"\n{RULES_FILE} updated. Running render + plan/apply...\n")
-    subprocess.run(["python3", "apply_rules.py"])
+    candidate_rules = handler(rules, op)
+
+    # rules.json is only written after apply_rules.py actually succeeds — not here.
+    # Writing it before the real terraform apply/commit would let the manifest claim
+    # a change that was never confirmed live.
+    result = subprocess.run(
+        ["python3", "apply_rules.py", "--rules-in", json.dumps(candidate_rules)]
+    )
+
+    if result.returncode == 0:
+        save_rules(candidate_rules)
+        print(f"\n{RULES_FILE} updated — apply confirmed successful.")
+    else:
+        print(f"\napply_rules.py did not complete successfully — {RULES_FILE} was NOT updated. "
+              "The candidate change above was not persisted to the manifest. Check the output "
+              "above, fix whatever's wrong, and either retry this instruction or run "
+              "`terraform plan` directly to see current state.")
+        sys.exit(1)
 
 
 if __name__ == "__main__":

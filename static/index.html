@@ -119,9 +119,16 @@ function escapeHtml(s) {
 }
 
 async function loadRules() {
-  const res = await fetch('/api/rules');
-  const rules = await res.json();
   const body = document.getElementById('rules-body');
+  let rules;
+  try {
+    const res = await fetch('/api/rules', { cache: 'no-store' });
+    if (!res.ok) throw new Error(`Server returned ${res.status}`);
+    rules = await res.json();
+  } catch (e) {
+    body.innerHTML = `<tr><td colspan="5" class="empty">Failed to load rules: ${e.message}</td></tr>`;
+    return;
+  }
   body.innerHTML = '';
   if (rules.length === 0) {
     body.innerHTML = '<tr><td colspan="5" class="empty">No rules yet.</td></tr>';

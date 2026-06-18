@@ -15,6 +15,20 @@ from render_policy import render_rules_to_string
 RULES_FILE = Path("rules.json")
 POLICIES_TF = Path("modules/panos-baseline/policies.tf")
 
+import os
+
+REQUIRED_ENV_VARS = ["ANTHROPIC_API_KEY", "PANOS_HOSTNAME", "PANOS_USERNAME", "PANOS_PASSWORD"]
+_missing = [v for v in REQUIRED_ENV_VARS if not os.environ.get(v)]
+if _missing:
+    print("=" * 60)
+    print("WARNING: missing in THIS shell's environment:")
+    for v in _missing:
+        print(f"  - {v}")
+    print("Interpreting will still work, but plan/apply will fail at")
+    print("the commit step. Stop this process (Ctrl+C), `source .env.sh`,")
+    print("and restart before relying on this server.")
+    print("=" * 60)
+
 app = FastAPI()
 
 JOBS: dict = {}
@@ -24,7 +38,7 @@ TERRAFORM_LOCK = threading.Lock()
 
 class CreateRule(BaseModel):
     """Create a brand new security rule on the firewall."""
-    name: str = Field(description="Unique name for the new rule")
+    name: str = Field(description="Unique name for the new rule, using hyphens between words (e.g. 'allow-ssh-from-internet'), matching the style of existing rules — never spaces.")
     source_zones: List[str] = Field(description="Source security zones, e.g. ['trust']")
     source_addresses: List[str] = Field(default=["any"])
     source_users: List[str] = Field(default=["any"])
@@ -92,7 +106,6 @@ def is_overly_broad(rule):
 
 
 def compute_candidate(rules, tool_name, args):
-    """Pure function: returns (candidate_rules, summary, warnings). No disk writes, no input()."""
     rules = json.loads(json.dumps(rules))
     warnings = []
 
@@ -173,10 +186,12 @@ def interpret(req: InterpretRequest):
             f"User request: {req.instruction}"
         )
     except Exception as e:
+        print(f"\n=== interpret FAILED: {e} ===\n", flush=True)
         return {"error": "llm_call_failed", "message": str(e)}
 
     tool_calls = response.tool_calls
     if not tool_calls:
+        print(f"\n=== interpret: no tool call. raw content: {response.content!r} ===\n", flush=True)
         return {"error": "no_tool_call",
                 "message": response.content or "Claude responded with plain text instead of a tool call."}
     if len(tool_calls) > 1:
@@ -184,6 +199,8 @@ def interpret(req: InterpretRequest):
                 "message": f"Got {len(tool_calls)} tool calls for one instruction — refusing to guess which to apply."}
 
     call = tool_calls[0]
+    print(f"\n=== interpret: '{req.instruction}' -> {call['name']}({call['args']}) ===\n", flush=True)
+
     try:
         rules = load_rules()
         candidate_rules, summary, warnings = compute_candidate(rules, call["name"], call["args"])
@@ -218,11 +235,10 @@ def plan_job(job_id: str):
     planfile = f"tfplan-{job_id}"
     with TERRAFORM_LOCK:
         POLICIES_TF.write_text(render_rules_to_string(job["candidate_rules"]))
-        code, output = run(["terraform", "plan", f"-out={planfile}", "-detailed-exitcode"])
-        # The saved planfile is self-contained — terraform apply reads it directly and
-        # never re-reads policies.tf. Safe to put the real file back right away rather
-        # than leave it "staged" while this job waits for you to review and confirm.
+        code, output = run(["terraform", "plan", "-no-color", f"-out={planfile}", "-detailed-exitcode"])
         restore_policies_tf_from_disk()
+
+    print(f"\n=== plan job {job_id} (exit {code}) ===\n{output}\n=== end plan {job_id} ===\n", flush=True)
 
     if code == 1:
         job["status"] = "plan_failed"
@@ -241,11 +257,10 @@ def apply_job(job_id: str):
         raise HTTPException(400, "Job must be successfully planned before it can be applied")
 
     with TERRAFORM_LOCK:
-        # If a different job applied in between this one's plan and apply steps,
-        # terraform detects the state moved since this plan was captured and refuses
-        # rather than applying blind against an outdated snapshot.
-        code, output = run(["terraform", "apply", job["planfile"]])
+        code, output = run(["terraform", "apply", "-no-color", job["planfile"]])
         Path(job["planfile"]).unlink(missing_ok=True)
+
+        print(f"\n=== apply job {job_id} (exit {code}) ===\n{output}\n=== end apply {job_id} ===\n", flush=True)
 
         if code != 0:
             job["status"] = "apply_failed"
