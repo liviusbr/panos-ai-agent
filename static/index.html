@@ -468,8 +468,24 @@ async function loadNatRules() {
       const srcZones = (r.source_zones || r.source_zone ? [r.source_zone] : []).join(', ') || (r.source_zones||[]).join(', ');
       const dstZone = r.destination_zone || (r.destination_zones||[]).join(', ');
       const dstAddr = (r.destination_addresses||[]).join(', ');
-      const snat = r.source_translation || (r.sat_type ? r.sat_type + (r.sat_interface ? ` (${r.sat_interface})` : '') : 'none');
-      const dnat = r.destination_translation || (r.dat_address ? r.dat_address + (r.dat_port ? `:${r.dat_port}` : '') : 'none');
+      // Build SNAT display — handle both live firewall format and agent rule format
+      let snat = 'none';
+      if (r.source_translation) {
+        snat = r.source_translation;
+      } else if (r.sat_type) {
+        snat = r.sat_type;
+        if (r.sat_interface) snat += ` (${r.sat_interface})`;
+        if (r.sat_static_translated_address) snat += ` → ${r.sat_static_translated_address}`;
+        if (r.sat_translated_addresses && r.sat_translated_addresses.length)
+          snat += ` pool=${r.sat_translated_addresses.join(',')}`;
+      }
+      // Build DNAT display
+      let dnat = 'none';
+      if (r.destination_translation && r.destination_translation !== 'none') {
+        dnat = r.destination_translation;
+      } else if (r.dat_address) {
+        dnat = r.dat_address + (r.dat_port ? `:${r.dat_port}` : '');
+      }
       tr.innerHTML = `
         <td class="num">${i + 1}</td>
         <td class="name">${escapeHtml(r.name)}${badge}</td>
