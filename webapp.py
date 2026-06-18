@@ -333,6 +333,15 @@ def hit_counts():
     }
 
 
+@app.post("/api/hit-counts/refresh")
+def refresh_hit_counts():
+    counts = panos_cache.get_hit_counts(force=True)
+    return {
+        "supported": bool(counts),
+        "hit_counts": counts,
+    }
+
+
 @app.get("/", response_class=HTMLResponse)
 def index():
     return Path("static/index.html").read_text()

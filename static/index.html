@@ -167,13 +167,18 @@ async function loadRules() {
   const body = document.getElementById('rules-body');
   let rules, hitData;
   try {
-    const hitsUrl = window.panos_cache_bust ? '/api/hit-counts/refresh' : '/api/hit-counts';
-    const hitsMethod = window.panos_cache_bust ? 'POST' : 'GET';
+    const bustCache = window.panos_cache_bust;
     window.panos_cache_bust = false;
-    const [rulesRes, hitsRes] = await Promise.all([
+    // Fetch hits first when busting cache so fresh data is ready before rules render
+    let hitsRes;
+    if (bustCache) {
+      hitsRes = await fetch('/api/hit-counts/refresh', { method: 'POST', cache: 'no-store' });
+    }
+    const [rulesRes, hitsResNormal] = await Promise.all([
       fetch('/api/rules', { cache: 'no-store' }),
-      fetch(hitsUrl, { method: hitsMethod, cache: 'no-store' }),
+      bustCache ? Promise.resolve(hitsRes) : fetch('/api/hit-counts', { cache: 'no-store' }),
     ]);
+    hitsRes = bustCache ? hitsRes : hitsResNormal;
     if (!rulesRes.ok) throw new Error(`Server returned ${rulesRes.status}`);
     rules = await rulesRes.json();
     hitData = hitsRes.ok ? await hitsRes.json() : { supported: false, hit_counts: {} };
