@@ -97,10 +97,10 @@
 <main>
   <div class="chat-col" id="chat-col">
     <div class="messages" id="messages">
-      <div class="msg system">Describe a rule change below — create, update, or delete. Nothing touches the firewall until you've reviewed and confirmed both the interpretation and the plan.</div>
+      <div class="msg system">Describe a rule change — prefix with <b>nat:</b> for NAT rules, or <b>sec:</b> / no prefix for security rules. Example: <i>nat: forward port 80 to 192.168.1.100</i> or <i>allow rdp from untrust to trust</i>.</div>
     </div>
     <div class="composer">
-      <input id="instruction" type="text" placeholder="e.g. allow ssl from untrust to the web server" autocomplete="off">
+      <input id="instruction" type="text" placeholder="e.g. allow ssl from untrust to web server  |  nat: forward port 443 to 192.168.1.100" autocomplete="off">
       <button class="primary" id="send">Send</button>
     </div>
   </div>
@@ -131,25 +131,12 @@
       </div>
     </div>
 
-    <div class="tab-content" id="tab-nat" style="flex-direction:row;">
-      <!-- NAT chat panel -->
-      <div style="flex:1;display:flex;flex-direction:column;border-right:1px solid var(--border);min-width:0;">
-        <div class="messages" id="nat-messages" style="flex:1;overflow-y:auto;padding:16px;display:flex;flex-direction:column;gap:12px;">
-          <div class="msg system">Describe a NAT rule change — create, update, or delete. Same pipeline as security rules: interpret → plan → apply.</div>
-        </div>
-        <div class="composer">
-          <input id="nat-instruction" type="text" placeholder="e.g. add DNAT rule to forward port 443 to 192.168.1.100" autocomplete="off">
-          <button class="primary" id="nat-send">Send</button>
-        </div>
-      </div>
-      <!-- NAT rules table -->
-      <div style="flex:1;display:flex;flex-direction:column;min-width:280px;">
-        <div class="rules-table">
-          <table id="nat-table">
-            <thead><tr><th></th><th>Name</th><th>Src Zone</th><th>Dst Zone</th><th>Dst Address</th><th>Source NAT</th><th>Dest NAT</th></tr></thead>
-            <tbody id="nat-body"><tr><td colspan="7" class="empty">Click NAT tab to load.</td></tr></tbody>
-          </table>
-        </div>
+    <div class="tab-content" id="tab-nat">
+      <div class="rules-table">
+        <table id="nat-table">
+          <thead><tr><th></th><th>Name</th><th>Src Zone</th><th>Dst Zone</th><th>Dst Address</th><th>Source NAT</th><th>Dest NAT</th></tr></thead>
+          <tbody id="nat-body"><tr><td colspan="7" class="empty">Click NAT tab to load.</td></tr></tbody>
+        </table>
       </div>
     </div>
   </div>
@@ -229,12 +216,38 @@ async function loadRules() {
   });
 }
 
-async function sendInstruction() {
-  const text = input.value.trim();
-  if (!text) return;
-  input.value = '';
-  addMessage(escapeHtml(text), 'msg user');
+function detectRouteAndStrip(text) {
+  const lower = text.toLowerCase();
+  if (lower.startsWith('nat:') || lower.startsWith('nat ')) {
+    const stripped = text.replace(/^nat[: ]+/i, '').trim();
+    return { route: 'nat', instruction: stripped };
+  }
+  if (lower.startsWith('sec:') || lower.startsWith('security:')) {
+    const stripped = text.replace(/^sec(urity)?[: ]+/i, '').trim();
+    return { route: 'security', instruction: stripped };
+  }
+  return { route: 'security', instruction: text };
+}
 
+async function sendInstruction() {
+  const raw = input.value.trim();
+  if (!raw) return;
+  input.value = '';
+
+  const { route, instruction } = detectRouteAndStrip(raw);
+  const routeLabel = route === 'nat' ? '[NAT] ' : '[Security] ';
+  addMessage(escapeHtml(routeLabel + instruction), 'msg user');
+
+  if (route === 'nat') {
+    // Switch to NAT tab so the user sees the relevant table
+    switchTab('nat');
+    await sendNatInstructionText(instruction);
+  } else {
+    await sendSecurityInstructionText(instruction);
+  }
+}
+
+async function sendSecurityInstructionText(text) {
   const thinking = addMessage('thinking…', 'msg system');
   let data;
   try {
@@ -255,8 +268,41 @@ async function sendInstruction() {
     addMessage(`<div class="label">${escapeHtml(data.error)}</div><div class="summary">${escapeHtml(data.message)}</div>`, 'card error');
     return;
   }
-
   renderInterpretation(data);
+}
+
+async function sendNatInstructionText(text) {
+  const thinking = addMessage('thinking…', 'msg system');
+  let data;
+  try {
+    const res = await fetch('/api/nat/interpret', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ instruction: text })
+    });
+    data = await res.json();
+  } catch (e) {
+    thinking.remove();
+    addMessage(`<div class="label">Request failed</div><div class="summary">${escapeHtml(e.message)}</div>`, 'card error');
+    return;
+  }
+  thinking.remove();
+
+  if (data.error) {
+    addMessage(`<div class="label">${escapeHtml(data.error)}</div><div class="summary">${escapeHtml(data.message)}</div>`, 'card error');
+    return;
+  }
+
+  const card = addMessage(`
+    <div class="label">Interpreted as NAT ${escapeHtml(data.tool_name)}</div>
+    <div class="summary">${escapeHtml(data.summary)}</div>
+    <div class="actions">
+      <button class="primary nat-confirm-btn">Continue</button>
+      <button class="nat-cancel-btn">Cancel</button>
+    </div>
+  `, 'card');
+  card.querySelector('.nat-confirm-btn').addEventListener('click', () => runNatPlan(data.job_id, card));
+  card.querySelector('.nat-cancel-btn').addEventListener('click', () => cancelNatJob(data.job_id, card));
 }
 
 function renderInterpretation(data) {
@@ -335,69 +381,20 @@ function switchTab(name) {
 }
 
 // ── NAT pipeline ──────────────────────────────────────────────────────────────
-function addNatMessage(html, cls) {
-  const div = document.createElement('div');
-  div.className = cls;
-  div.innerHTML = html;
-  const msgs = document.getElementById('nat-messages');
-  msgs.appendChild(div);
-  msgs.scrollTop = msgs.scrollHeight;
-  return div;
-}
-
-async function sendNatInstruction() {
-  const text = document.getElementById('nat-instruction').value.trim();
-  if (!text) return;
-  document.getElementById('nat-instruction').value = '';
-  addNatMessage(escapeHtml(text), 'msg user');
-
-  const thinking = addNatMessage('thinking…', 'msg system');
-  let data;
-  try {
-    const res = await fetch('/api/nat/interpret', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ instruction: text })
-    });
-    data = await res.json();
-  } catch (e) {
-    thinking.remove();
-    addNatMessage(`<div class="label">Request failed</div><div class="summary">${escapeHtml(e.message)}</div>`, 'card error');
-    return;
-  }
-  thinking.remove();
-
-  if (data.error) {
-    addNatMessage(`<div class="label">${escapeHtml(data.error)}</div><div class="summary">${escapeHtml(data.message)}</div>`, 'card error');
-    return;
-  }
-
-  const card = addNatMessage(`
-    <div class="label">Interpreted as ${escapeHtml(data.tool_name)}</div>
-    <div class="summary">${escapeHtml(data.summary)}</div>
-    <div class="actions">
-      <button class="primary nat-confirm-btn">Continue</button>
-      <button class="nat-cancel-btn">Cancel</button>
-    </div>
-  `, 'card');
-  card.querySelector('.nat-confirm-btn').addEventListener('click', () => runNatPlan(data.job_id, card));
-  card.querySelector('.nat-cancel-btn').addEventListener('click', () => cancelNatJob(data.job_id, card));
-}
-
 async function runNatPlan(jobId, prevCard) {
   prevCard.querySelectorAll('button').forEach(b => b.disabled = true);
-  const thinking = addNatMessage('running terraform plan…', 'msg system');
+  const thinking = addMessage('running terraform plan…', 'msg system');
   const res = await fetch(`/api/nat/jobs/${jobId}/plan`, { method: 'POST' });
   const data = await res.json();
   thinking.remove();
 
   if (data.status === 'plan_failed') {
-    addNatMessage(`<div class="label" style="color:var(--deny)">Plan failed</div><div class="plan-output">${escapeHtml(data.output)}</div>`, 'card error');
+    addMessage(`<div class="label" style="color:var(--deny)">Plan failed</div><div class="plan-output">${escapeHtml(data.output)}</div>`, 'card error');
     return;
   }
 
-  const planCard = addNatMessage(`
-    <div class="label">Terraform plan</div>
+  const planCard = addMessage(`
+    <div class="label">Terraform plan (NAT)</div>
     <div class="plan-output">${escapeHtml(data.output)}</div>
     <div class="actions">
       <button class="primary nat-apply-btn" ${data.no_changes ? 'disabled' : ''}>Apply</button>
@@ -410,23 +407,23 @@ async function runNatPlan(jobId, prevCard) {
 
 async function runNatApply(jobId, prevCard) {
   prevCard.querySelectorAll('button').forEach(b => b.disabled = true);
-  const thinking = addNatMessage('applying — waiting for PAN-OS commit…', 'msg system');
+  const thinking = addMessage('applying — waiting for PAN-OS commit…', 'msg system');
   const res = await fetch(`/api/nat/jobs/${jobId}/apply`, { method: 'POST' });
   const data = await res.json();
   thinking.remove();
 
   if (data.status === 'applied') {
-    addNatMessage(`<div class="label" style="color:var(--allow)">Applied</div><div class="plan-output">${escapeHtml(data.output)}</div>`, 'card');
+    addMessage(`<div class="label" style="color:var(--allow)">Applied (NAT)</div><div class="plan-output">${escapeHtml(data.output)}</div>`, 'card');
     loadNatRules();
   } else {
-    addNatMessage(`<div class="label" style="color:var(--deny)">Apply failed</div><div class="summary">${escapeHtml(data.warning || '')}</div><div class="plan-output">${escapeHtml(data.output)}</div>`, 'card error');
+    addMessage(`<div class="label" style="color:var(--deny)">Apply failed (NAT)</div><div class="summary">${escapeHtml(data.warning || '')}</div><div class="plan-output">${escapeHtml(data.output)}</div>`, 'card error');
   }
 }
 
 async function cancelNatJob(jobId, prevCard) {
   await fetch(`/api/nat/jobs/${jobId}/cancel`, { method: 'POST' });
   prevCard.querySelectorAll('button').forEach(b => b.disabled = true);
-  addNatMessage('Cancelled — nothing applied.', 'msg system');
+  addMessage('Cancelled — nothing applied.', 'msg system');
 }
 
 async function loadNatRules() {
@@ -522,8 +519,6 @@ async function loadNatRules() {
   });
 })();
 
-document.getElementById('nat-send').addEventListener('click', sendNatInstruction);
-document.getElementById('nat-instruction').addEventListener('keydown', (e) => { if (e.key === 'Enter') sendNatInstruction(); });
 document.getElementById('send').addEventListener('click', sendInstruction);
 input.addEventListener('keydown', (e) => { if (e.key === 'Enter') sendInstruction(); });
 document.getElementById('refresh').addEventListener('click', () => {
