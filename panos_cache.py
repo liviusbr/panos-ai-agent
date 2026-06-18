@@ -63,36 +63,41 @@ def _fetch_hit_counts(hostname, key):
     Returns dict of {rule_name: hit_count} or empty dict if unsupported.
     Tries multiple endpoints since support varies by PAN-OS version and license.
     """
-    cmd = (
-        "<show><rule-hit-count><vsys><vsys-name>"
-        "<entry name='vsys1'><rule-base><entry name='security'>"
-        "<rules><all/></rules></entry></rule-base></entry>"
-        "</vsys-name></vsys></rule-hit-count></show>"
-    )
-    try:
-        r = requests.get(
-            f"https://{hostname}/api/",
-            params={"type": "op", "cmd": cmd, "key": key},
-            verify=False, timeout=15
+    def fetch_rulebase_hits(rulebase):
+        cmd = (
+            f"<show><rule-hit-count><vsys><vsys-name>"
+            f"<entry name='vsys1'><rule-base><entry name='{rulebase}'>"
+            f"<rules><all/></rules></entry></rule-base></entry>"
+            f"</vsys-name></vsys></rule-hit-count></show>"
         )
-        root = ET.fromstring(r.text)
-        if root.get("status") != "success":
-            print(f"Hit count query returned non-success: {r.text[:200]}", flush=True)
+        try:
+            r = requests.get(
+                f"https://{hostname}/api/",
+                params={"type": "op", "cmd": cmd, "key": key},
+                verify=False, timeout=15
+            )
+            root = ET.fromstring(r.text)
+            if root.get("status") != "success":
+                print(f"Hit count query ({rulebase}) non-success: {r.text[:100]}", flush=True)
+                return {}
+            hits = {}
+            for entry in root.findall(".//rules/entry"):
+                name = entry.get("name")
+                count = entry.findtext("hit-count")
+                last_hit = entry.findtext("last-hit-timestamp")
+                if name and count is not None:
+                    hits[name] = {
+                        "hit_count": int(count),
+                        "last_hit_timestamp": int(last_hit) if last_hit else 0,
+                    }
+            return hits
+        except Exception as e:
+            print(f"Hit count fetch ({rulebase}) failed: {e}", flush=True)
             return {}
-        hits = {}
-        for entry in root.findall(".//rules/entry"):
-            name = entry.get("name")
-            count = entry.findtext("hit-count")
-            last_hit = entry.findtext("last-hit-timestamp")
-            if name and count is not None:
-                hits[name] = {
-                    "hit_count": int(count),
-                    "last_hit_timestamp": int(last_hit) if last_hit else 0,
-                }
-        return hits
-    except Exception as e:
-        print(f"Hit count fetch failed: {e}", flush=True)
-        return {}
+
+    security_hits = fetch_rulebase_hits("security")
+    nat_hits = fetch_rulebase_hits("nat")
+    return {**security_hits, **nat_hits}
 
 
 def load_cache():

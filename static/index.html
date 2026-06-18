@@ -134,8 +134,8 @@
     <div class="tab-content" id="tab-nat">
       <div class="rules-table">
         <table id="nat-table">
-          <thead><tr><th></th><th>Name</th><th>Src Zone</th><th>Dst Zone</th><th>Dst Address</th><th>Source NAT</th><th>Dest NAT</th></tr></thead>
-          <tbody id="nat-body"><tr><td colspan="7" class="empty">Click NAT tab to load.</td></tr></tbody>
+          <thead><tr><th></th><th>Name</th><th>Src Zone</th><th>Dst Zone</th><th>Dst Address</th><th>Source NAT</th><th>Dest NAT</th><th>Hits</th></tr></thead>
+          <tbody id="nat-body"><tr><td colspan="8" class="empty">Click NAT tab to load.</td></tr></tbody>
         </table>
       </div>
     </div>
@@ -442,12 +442,16 @@ async function loadNatRules() {
   body.innerHTML = '<tr><td colspan="7" class="empty">Loading…</td></tr>';
   try {
     // Merge live firewall rules (read-only) with agent-managed rules
-    const [liveRes, agentRes] = await Promise.all([
+    const [liveRes, agentRes, hitsRes] = await Promise.all([
       fetch('/api/nat-rules', { cache: 'no-store' }),
       fetch('/api/nat/rules', { cache: 'no-store' }),
+      fetch('/api/hit-counts', { cache: 'no-store' }),
     ]);
     const liveData = liveRes.ok ? await liveRes.json() : { rules: [] };
     const agentRules = agentRes.ok ? await agentRes.json() : [];
+    const hitData = hitsRes.ok ? await hitsRes.json() : { supported: false, hit_counts: {} };
+    const natHits = hitData.hit_counts || {};
+    const natHitsSupported = hitData.supported;
 
     // Mark source of each rule
     const liveRules = (liveData.rules || []).map(r => ({ ...r, _source: 'live' }));
@@ -499,6 +503,7 @@ async function loadNatRules() {
         <td class="addr">${escapeHtml(dstAddr)}</td>
         <td class="addr">${escapeHtml(snat)}</td>
         <td class="addr">${escapeHtml(dnat)}</td>
+        <td class="hits">${natHitsSupported ? (natHits[r.name] !== undefined ? (natHits[r.name].hit_count !== undefined ? Number(natHits[r.name].hit_count).toLocaleString() : natHits[r.name]) : '0') : 'N/A'}</td>
       `;
       body.appendChild(tr);
     });
