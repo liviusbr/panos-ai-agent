@@ -1,0 +1,40 @@
+---
+- name: PAN-OS Day-2 Configuration
+  hosts: panos
+  connection: local
+  gather_facts: false
+
+  vars:
+    provider:
+      ip_address: "{{ panos_ip }}"
+      username: "{{ panos_username }}"
+      password: "{{ panos_password }}"
+
+  tasks:
+    - name: Set hostname
+      paloaltonetworks.panos.panos_config_element:
+        provider: "{{ provider }}"
+        xpath: "/config/devices/entry[@name='localhost.localdomain']/deviceconfig/system"
+        element: "<hostname>PA-VM-Lab7</hostname>"
+
+    - name: Set DNS servers
+      paloaltonetworks.panos.panos_config_element:
+        provider: "{{ provider }}"
+        xpath: "/config/devices/entry[@name='localhost.localdomain']/deviceconfig/system/dns-setting/servers"
+        element: "<primary>8.8.8.8</primary><secondary>8.8.4.4</secondary>"
+
+    - name: Set NTP server
+      paloaltonetworks.panos.panos_config_element:
+        provider: "{{ provider }}"
+        xpath: "/config/devices/entry[@name='localhost.localdomain']/deviceconfig/system/ntp-servers/primary-ntp-server"
+        element: "<ntp-server-address>pool.ntp.org</ntp-server-address>"
+
+    - name: Set timezone
+      paloaltonetworks.panos.panos_config_element:
+        provider: "{{ provider }}"
+        xpath: "/config/devices/entry[@name='localhost.localdomain']/deviceconfig/system"
+        element: "<timezone>Europe/Bucharest</timezone>"
+
+    - name: Commit configuration
+      paloaltonetworks.panos.panos_commit_firewall:
+        provider: "{{ provider }}"

@@ -1,0 +1,9 @@
+[panos]
+${firewall_ip}
+
+[panos:vars]
+ansible_connection=local
+ansible_python_interpreter=/usr/bin/python3
+panos_ip=${firewall_ip}
+panos_username=${username}
+panos_password=${password}

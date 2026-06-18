@@ -1,0 +1,3 @@
+ip_address: "{{ panos_ip }}"
+username: "{{ panos_username }}"
+password: "{{ panos_password }}"

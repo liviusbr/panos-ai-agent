@@ -1,0 +1,22 @@
+# Terraform
+.terraform/
+*.tfstate
+*.tfstate.*
+*.tfvars
+*.auto.tfvars
+tfplan
+tfplan-*
+crash.log
+crash.*.log
+
+# Python
+venv/
+__pycache__/
+*.pyc
+
+# Generated — contains the live password via the inventory template
+ansible/inventory.ini
+
+# Local secrets, if you create one
+.env
+.env.sh
