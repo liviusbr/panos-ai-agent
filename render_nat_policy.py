@@ -53,6 +53,8 @@ resource "panos_nat_rule_group" "agent_nat_rules" {
 {% endif %}
         }
       }
+{% else %}
+      destination {}
 {% endif %}
     }
   }
@@ -79,7 +81,7 @@ def render_nat_rules_to_string(rules):
             "destination_addresses": hcl_list(r["destination_addresses"]),
             "service": r.get("service", "any"),
             "sat_type": r.get("sat_type", "dynamic-ip-and-port"),
-            "sat_translated_addresses": hcl_list(r.get("sat_translated_addresses", [])),
+            "sat_translated_addresses": hcl_list(r.get("sat_translated_addresses") or []),
             "sat_static_translated_address": r.get("sat_static_translated_address", ""),
             "sat_static_bi_directional": "true" if r.get("sat_static_bi_directional") else "false",
             "dat_address": r.get("dat_address", ""),

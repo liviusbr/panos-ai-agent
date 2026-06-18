@@ -159,6 +159,10 @@ function escapeHtml(s) {
   return (s || '').replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
 }
 
+function escapeHtmlPreserveNewlines(s) {
+  return escapeHtml(s).replace(/\n/g, '<br>');
+}
+
 async function loadRules() {
   const body = document.getElementById('rules-body');
   let rules, hitData;
@@ -217,13 +221,15 @@ async function loadRules() {
 }
 
 function detectRouteAndStrip(text) {
-  const lower = text.toLowerCase();
-  if (lower.startsWith('nat:') || lower.startsWith('nat ')) {
-    const stripped = text.replace(/^nat[: ]+/i, '').trim();
+  const lower = text.toLowerCase().trim();
+  // Accept: nat: / nat / [nat] / [nat]
+  if (/^(nat[: ]+|\[nat\]\s*)/.test(lower)) {
+    const stripped = text.replace(/^(\[nat\]|nat)[: ]*/i, '').trim();
     return { route: 'nat', instruction: stripped };
   }
-  if (lower.startsWith('sec:') || lower.startsWith('security:')) {
-    const stripped = text.replace(/^sec(urity)?[: ]+/i, '').trim();
+  // Accept: sec: / security: / [security] / [sec]
+  if (/^(sec(urity)?[: ]+|\[sec(urity)?\]\s*)/.test(lower)) {
+    const stripped = text.replace(/^(\[sec(urity)?\]|sec(urity)?)[: ]*/i, '').trim();
     return { route: 'security', instruction: stripped };
   }
   return { route: 'security', instruction: text };
@@ -295,7 +301,7 @@ async function sendNatInstructionText(text) {
 
   const card = addMessage(`
     <div class="label">Interpreted as NAT ${escapeHtml(data.tool_name)}</div>
-    <div class="summary">${escapeHtml(data.summary)}</div>
+    <div class="summary">${escapeHtmlPreserveNewlines(data.summary)}</div>
     <div class="actions">
       <button class="primary nat-confirm-btn">Continue</button>
       <button class="nat-cancel-btn">Cancel</button>

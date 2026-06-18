@@ -458,12 +458,12 @@ def compute_nat_candidate(rules, tool_name, args):
         new_rule = op.model_dump()
         rules.append(new_rule)
         summary = (
-            f"CREATE NAT '{op.name}:\\n"
-            f"  src:  zones={new_rule['source_zones']}  addrs={new_rule['source_addresses']}\\n"
-            f"  dst:  zone={new_rule['destination_zone']}  addrs={new_rule['destination_addresses']}\\n"
+            f"CREATE NAT '{op.name}:\n"
+            f"  src:  zones={new_rule['source_zones']}  addrs={new_rule['source_addresses']}\n"
+            f"  dst:  zone={new_rule['destination_zone']}  addrs={new_rule['destination_addresses']}\n"
             f"  snat: {new_rule['sat_type']}"
             + (f" via {new_rule['sat_interface']}" if new_rule.get('sat_interface') else "")
-            + (f"\\n  dnat: {new_rule['dat_address']}" + (f":{new_rule['dat_port']}" if new_rule.get('dat_port') else "") if new_rule.get('dat_address') else "")
+            + (f"\n  dnat: {new_rule['dat_address']}" + (f":{new_rule['dat_port']}" if new_rule.get('dat_port') else "") if new_rule.get('dat_address') else "")
         )
 
     elif tool_name == "UpdateNatRule":
